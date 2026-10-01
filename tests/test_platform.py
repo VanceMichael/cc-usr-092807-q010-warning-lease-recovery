@@ -79,18 +79,18 @@ class PlatformTest(unittest.TestCase):
 
     def test_jobs_recover_from_lease(self):
         job = self.app.jobs.schedule(job_type="deadline", subject_id="case:1", run_at="2026-09-28T03:00:00Z", payload={"kind": "notice"})
-        claimed = self.app.jobs.claim_due()
+        claimed = self.app.jobs.claim_due(owner="worker-a")
         self.assertEqual([item["job_id"] for item in claimed], [job])
-        self.app.jobs.finish(job)
-        self.assertEqual(self.app.jobs.claim_due(), [])
+        self.app.jobs.finish(job, owner="worker-a", lease_version=claimed[0]["lease_version"])
+        self.assertEqual(self.app.jobs.claim_due(owner="worker-a"), [])
 
     def test_outbox_delivery_requires_lease(self):
         message = self.app.outbox.enqueue(topic="case", aggregate_id="case:1", payload={"ok": True})
         with self.assertRaises(ConflictError):
-            self.app.outbox.complete(message)
+            self.app.outbox.complete(message, owner="worker", lease_version=1)
         leased = self.app.outbox.lease(owner="worker")
         self.assertEqual(leased[0]["message_id"], message)
-        self.app.outbox.complete(message)
+        self.app.outbox.complete(message, owner="worker", lease_version=leased[0]["lease_version"])
 
     def test_permissions_and_self_review(self):
         limited = AccessContext(actor_id="reader", permissions=frozenset({"read:cases"}))

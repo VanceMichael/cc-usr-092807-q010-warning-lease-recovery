@@ -36,11 +36,17 @@ def main(argv: list[str] | None = None) -> int:
     commands.add_parser("demo")
     commands.add_parser("verify")
     commands.add_parser("list-cases")
+    outbox_inspect = commands.add_parser("outbox-inspect", help="查看一条通知的投递状态、租约持有人和重试原因")
+    outbox_inspect.add_argument("message_id")
+    job_inspect = commands.add_parser("job-inspect", help="查看一个定时任务的执行状态、租约持有人和重试原因")
+    job_inspect.add_argument("job_id")
     args = parser.parse_args(argv)
     app = CivicFlow.open(Path(args.db), fixed_now=args.now)
     if args.command == "demo": emit(demo(app))
     elif args.command == "verify": emit(app.verify())
     elif args.command == "list-cases": emit(CaseService(app.repository).list_current(AccessContext.system("cli")))
+    elif args.command == "outbox-inspect": emit(app.outbox.inspect(args.message_id))
+    elif args.command == "job-inspect": emit(app.jobs.inspect(args.job_id))
     return 0
 
 

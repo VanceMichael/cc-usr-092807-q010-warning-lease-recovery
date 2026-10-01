@@ -81,9 +81,12 @@ CREATE TABLE IF NOT EXISTS outbox_messages (
     payload_json TEXT NOT NULL,
     available_at TEXT NOT NULL,
     lease_until TEXT,
+    lease_owner TEXT,
+    lease_version INTEGER NOT NULL DEFAULT 0,
     attempts INTEGER NOT NULL DEFAULT 0,
     status TEXT NOT NULL,
-    delivered_at TEXT
+    delivered_at TEXT,
+    last_error TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS outbox_ready ON outbox_messages(status, available_at, lease_until);
 CREATE TABLE IF NOT EXISTS journal_entries (
@@ -121,10 +124,22 @@ CREATE TABLE IF NOT EXISTS scheduled_jobs (
     status TEXT NOT NULL,
     attempt INTEGER NOT NULL DEFAULT 0,
     lease_until TEXT,
+    lease_owner TEXT,
+    lease_version INTEGER NOT NULL DEFAULT 0,
     last_error TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS jobs_due ON scheduled_jobs(status, run_at, lease_until);
 """
+
+# 既有数据库的增量列迁移：(表, 列, 列定义)。initialize 对缺失列执行 ALTER TABLE，
+# 已有行获得默认值（lease_version=0、lease_owner=NULL），语义与“从未被领取”一致。
+COLUMN_MIGRATIONS = (
+    ("outbox_messages", "lease_owner", "lease_owner TEXT"),
+    ("outbox_messages", "lease_version", "lease_version INTEGER NOT NULL DEFAULT 0"),
+    ("outbox_messages", "last_error", "last_error TEXT NOT NULL DEFAULT ''"),
+    ("scheduled_jobs", "lease_owner", "lease_owner TEXT"),
+    ("scheduled_jobs", "lease_version", "lease_version INTEGER NOT NULL DEFAULT 0"),
+)
 
 
 class Database:
@@ -142,6 +157,15 @@ class Database:
     def initialize(self) -> None:
         with self.connect() as connection:
             connection.executescript(SCHEMA)
+            for table, column, definition in COLUMN_MIGRATIONS:
+                existing = {row["name"] for row in connection.execute(f"PRAGMA table_info({table})")}
+                if column not in existing:
+                    try:
+                        connection.execute(f"ALTER TABLE {table} ADD COLUMN {definition}")
+                    except sqlite3.OperationalError as exc:
+                        # 并发的另一个进程已先行完成同一迁移
+                        if "duplicate column" not in str(exc).lower():
+                            raise
 
     @contextmanager
     def transaction(self, *, immediate: bool = True) -> Iterator[sqlite3.Connection]:

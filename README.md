@@ -37,3 +37,20 @@ PYTHONPATH=src python3 -m civicflow.cli --db /tmp/civicflow-demo.sqlite3 demo
 ```bash
 PYTHONPATH=src python3 -m civicflow.cli --db /tmp/civicflow-demo.sqlite3 list-cases
 ```
+
+## 通知发件箱与定时任务的租约语义
+
+工作进程通过 `outbox.lease(owner=...)` / `jobs.claim_due(owner=...)` 领取消息和任务。领取时持久化 `lease_owner` 与单调递增的 `lease_version`（fencing 令牌）：
+
+- 领取后崩溃的进程不会卡死消息：`leased`/`running` 状态的记录在 `lease_until` 过期后会被其他进程安全回收重领。
+- `complete`/`fail`/`renew`（发件箱）与 `finish`/`retry`/`renew`（任务队列）必须携带当前租约的 `owner` 与 `lease_version`，且租约未过期；旧进程迟到的确认会因版本不匹配被拒绝，不会覆盖新进程的处理结果。
+- `lease_until` 为 NULL 表示当前没有有效租约；`lease_owner` 保留最后一次领取人，便于值守界面追溯。
+- 失败重试保持原有语义：发件箱 `attempts`、任务 `attempt` 达到 5 次后进入 `dead`/`failed` 终态，不再被领取；`last_error` 记录最近一次失败原因。
+- 既有数据库在 `CivicFlow.open` 时自动就地升级（新增 `lease_owner`、`lease_version`、`last_error` 列），已有消息与任务语义不变，卡死记录随租约到期即可回收。
+
+值守人员可用命令查询一条预警是否仍会送达（`will_deliver`）、由谁处理（`lease_owner`/`lease_active`）以及为何重试（`last_error`/`attempts`）：
+
+```bash
+PYTHONPATH=src python3 -m civicflow.cli --db /tmp/civicflow-demo.sqlite3 outbox-inspect <message_id>
+PYTHONPATH=src python3 -m civicflow.cli --db /tmp/civicflow-demo.sqlite3 job-inspect <job_id>
+```
