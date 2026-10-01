@@ -81,8 +81,11 @@ CREATE TABLE IF NOT EXISTS outbox_messages (
     payload_json TEXT NOT NULL,
     available_at TEXT NOT NULL,
     lease_until TEXT,
+    lease_owner TEXT,
+    lease_version INTEGER NOT NULL DEFAULT 0,
     attempts INTEGER NOT NULL DEFAULT 0,
     status TEXT NOT NULL,
+    last_error TEXT NOT NULL DEFAULT '',
     delivered_at TEXT
 );
 CREATE INDEX IF NOT EXISTS outbox_ready ON outbox_messages(status, available_at, lease_until);
@@ -121,10 +124,21 @@ CREATE TABLE IF NOT EXISTS scheduled_jobs (
     status TEXT NOT NULL,
     attempt INTEGER NOT NULL DEFAULT 0,
     lease_until TEXT,
+    lease_owner TEXT,
+    lease_version INTEGER NOT NULL DEFAULT 0,
     last_error TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS jobs_due ON scheduled_jobs(status, run_at, lease_until);
 """
+
+# 旧库缺少的租约列按 (表, 列, 语句) 幂等补齐；既有行取列默认值，语义不变。
+MIGRATIONS = (
+    ("outbox_messages", "lease_owner", "ALTER TABLE outbox_messages ADD COLUMN lease_owner TEXT"),
+    ("outbox_messages", "lease_version", "ALTER TABLE outbox_messages ADD COLUMN lease_version INTEGER NOT NULL DEFAULT 0"),
+    ("outbox_messages", "last_error", "ALTER TABLE outbox_messages ADD COLUMN last_error TEXT NOT NULL DEFAULT ''"),
+    ("scheduled_jobs", "lease_owner", "ALTER TABLE scheduled_jobs ADD COLUMN lease_owner TEXT"),
+    ("scheduled_jobs", "lease_version", "ALTER TABLE scheduled_jobs ADD COLUMN lease_version INTEGER NOT NULL DEFAULT 0"),
+)
 
 
 class Database:
@@ -142,6 +156,10 @@ class Database:
     def initialize(self) -> None:
         with self.connect() as connection:
             connection.executescript(SCHEMA)
+            for table, column, statement in MIGRATIONS:
+                columns = {row["name"] for row in connection.execute(f"PRAGMA table_info({table})")}
+                if column not in columns:
+                    connection.execute(statement)
 
     @contextmanager
     def transaction(self, *, immediate: bool = True) -> Iterator[sqlite3.Connection]:
